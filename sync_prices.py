@@ -191,6 +191,11 @@ def upsert_to_supabase(sb, rows):
                 "name": pick(item, "itemname") or "",
                 "brand": pick(item, "manufacturername"),
                 "size_label": pick(item, "quantity", "unitqty"),
+                # לטבלת products יש עמודת category עם NOT NULL constraint (ראינו
+                # בשגיאה: "null value in column category violates not-null
+                # constraint"). עדיין אין לנו סיווג אוטומטי לפי אזור בסופר, אז
+                # שמים ערך זמני - זה נושא נפרד לשיפור עתידי (שיוך אמיתי לפי קטגוריה).
+                "category": "לא מסווג",
             },
             on_conflict="barcode",
         ).execute()
