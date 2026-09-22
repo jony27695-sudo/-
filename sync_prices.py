@@ -64,7 +64,13 @@ def download_dumps(enabled_chains):
     # לסיום בפועל. חובה לקרוא ל-join() כדי לחכות שההורדה באמת תסתיים
     # (אומת מול קוד המקור: scrapper_runner.py - start() מחזיר Thread, ו-join()
     # הוא זה ש"מחכה לסיום ה-thread").
-    task.start()
+    #
+    # בלי limit/when_date, הספרייה מנסה להוריד את כל ההיסטוריה של קבצי
+    # המחירים של כל רשת (יכול להיות אלפי קבצים) - זו הסיבה שהריצה הקודמת
+    # חרגה מ-30 דקות ונעצרה. limit=1 + when_date=היום מגביל להורדת הקובץ
+    # העדכני ביותר בלבד לכל סניף (אומת מול example.py הרשמי של הספרייה:
+    # scraper.start(limit=1, when_date=_now())).
+    task.start(limit=1, when_date=datetime.now())
     task.join()
     n_files = len(glob.glob(f"{DUMP_DIR}/**/*", recursive=True))
     log.info("סיום הורדה. קבצים בתיקייה: %d", n_files)
