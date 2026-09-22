@@ -188,6 +188,21 @@ def parse_store_files(enabled_chains):
         # נבדק בריצה אמיתית עדיין) - שורת אבחון כדי שאפשר יהיה לתקן בקלות
         # בדיוק כמו שעשינו עם קובצי המחירים.
         log.info("עמודות קובץ סניפים שנמצאו בפועל: %s", list(rows[0].keys()))
+        # אבחון נוסף: בריצה הקודמת רק 4 מתוך 321 שורות עברו את הבדיקה
+        # "יש chainid ו-storeid" - כדי להבין למה, מדפיסים כאן את כל
+        # הערכים (לא רק שמות העמודות) של כמה שורות אמיתיות, כדי לראות אם
+        # השדות באמת ריקים ברוב השורות או שיש כאן משהו אחר.
+        sample = rows[:3] + (rows[160:163] if len(rows) > 160 else [])
+        for i, r in enumerate(sample):
+            log.info("שורת סניף לדוגמה #%d: %s", i, dict(r))
+        with_chain_and_store = sum(
+            1 for r in rows
+            if (r.get("chainid") not in (None, "")) and (r.get("storeid") not in (None, ""))
+        )
+        log.info(
+            "מתוך %d שורות: ל-%d יש גם chainid וגם storeid לא-ריקים",
+            len(rows), with_chain_and_store,
+        )
     return rows
 
 
