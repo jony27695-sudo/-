@@ -13,6 +13,7 @@ sync_prices.py
 """
 import os
 import sys
+import csv
 import glob
 import shutil
 import logging
@@ -22,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("sync_prices")
 
 DUMP_DIR = "dumps"
+PARSED_DIR = "parsed"
 # שמות המפתח (ENUM) אומתו מול il_supermarket_scarper/utils/folders_name.py
 # בריפו המקורי - אלה השמות המדויקים והנכונים לרשתות רמי לוי, אושר עד,
 # יוחננוף וכרפור (ששילוב עם יינות ביתן תחת שם אחד בספרייה הזו).
@@ -58,14 +60,168 @@ def download_dumps(enabled_chains):
             "base_path": os.path.join(DUMP_DIR, "status"),
         },
     )
+    # task.start() מריץ את ההורדה ב-thread נפרד ברקע וחוזר מיד - הוא לא מחכה
+    # לסיום בפועל. חובה לקרוא ל-join() כדי לחכות שההורדה באמת תסתיים
+    # (אומת מול קוד המקור: scrapper_runner.py - start() מחזיר Thread, ו-join()
+    # הוא זה ש"מחכה לסיום ה-thread").
     task.start()
-    log.info("סיום הורדה. קבצים בתיקייה: %d", len(glob.glob(f"{DUMP_DIR}/**/*", recursive=True)))
+    task.join()
+    n_files = len(glob.glob(f"{DUMP_DIR}/**/*", recursive=True))
+    log.info("סיום הורדה. קבצים בתיקייה: %d", n_files)
+    if n_files == 0:
+        log.warning("לא ירדו קבצים בכלל - כדאי לבדוק את שמות הרשתות ב-ENABLED_CHAINS")
 
 
 def parse_dumps():
-    """הופך את הקבצים הגולמיים למבנה אחיד: רשימת (chain, store, items[])."""
+    """
+    הופך את הקבצים הגולמיים ל-CSV אחיד, וקורא את שורות ה-CSV בחזרה.
+    אומת מול README הרשמי של il_supermarket_parsers: ConvertingTask כותב
+    קבצי CSV לתיקיית פלט (לא מחזיר אובייקט פייתון ישירות), וגם כאן צריך
+    start() + join() כי הריצה היא ברקע.
+    """
     from il_supermarket_parsers import ConvertingTask
 
-    task = ConvertingTask(data_folder=DUMP_DIR)
-    # ה-API המדויק להחזרת התוצאה המפוענחת (return value / output folder)
-    #
+    if os.path.isdir(PARSED_DIR):
+        shutil.rmtree(PARSED_DIR)
+    os.makedirs(PARSED_DIR, exist_ok=True)
+
+    task = ConvertingTask(
+        source_configuration={"folder": DUMP_DIR},
+        output_configuration=[{"output_mode": "csv", "output_folder": PARSED_DIR}],
+        status_configuration={"database_type": "json", "base_path": PARSED_DIR},
+    )
+    task.start()
+    task.join()
+
+    csv_files = glob.glob(f"{PARSED_DIR}/**/*.csv", recursive=True)
+    log.info("סיום פענוח. קבצי CSV שנוצרו: %d", len(csv_files))
+
+    rows = []
+    for path in csv_files:
+        with open(path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+    log.info("סה״כ שורות פריטים שנקראו: %d", len(rows))
+    if rows:
+        log.info("שמות העמודות שנמצאו בפועל (לצורך אבחון): %s", list(rows[0].keys()))
+    return rows
+
+
+def upsert_to_supabase(sb, rows):
+    """
+    מקבל רשימה שטוחה של שורות (כל שורה = פריט אחד בסניף אחד) וכותב אותן
+    לטבלאות chains / branches / products / prices.
+    שמות העמודות המדויקים ב-CSV לא היו ידועים מראש - הקוד מנסה כמה שמות
+    נפוצים (לפי תקן קובצי שקיפות המחירים) ומדלג על שורה עם ברקוד/מחיר חסרים.
+    אם רואים בלוג "0 מחירים עודכנו" למרות שיש שורות - צריך להסתכל בלוג
+    "שמות העמודות שנמצאו בפועל" ולעדכן כאן את שמות המפתחות בהתאם.
+    """
+
+    def pick(d, *keys):
+        for k in keys:
+            v = d.get(k)
+            if v not in (None, ""):
+                return v
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    chains_cache = {}
+    branches_cache = {}
+    price_rows = []
+    skipped = 0
+
+    for item in rows:
+        chain_name = pick(item, "ChainName", "chain", "ChainId") or "לא ידוע"
+        if chain_name not in chains_cache:
+            res = sb.table("chains").upsert(
+                {"name": chain_name, "chain_code": str(chain_name), "source": "gov_files"},
+                on_conflict="chain_code",
+            ).execute()
+            chains_cache[chain_name] = res.data[0]["id"] if res.data else None
+        chain_id = chains_cache[chain_name]
+
+        store_code = pick(item, "StoreId", "StoreID", "store_id")
+        store_key = (chain_id, store_code)
+        if store_key not in branches_cache:
+            res = sb.table("branches").upsert(
+                {
+                    "chain_id": chain_id,
+                    "external_code": str(store_code),
+                    "name": pick(item, "StoreName", "store_name") or f"{chain_name} {store_code}",
+                    "address": pick(item, "Address", "address"),
+                    "city": pick(item, "City", "city"),
+                },
+                on_conflict="chain_id,external_code",
+            ).execute()
+            branches_cache[store_key] = res.data[0]["id"] if res.data else None
+        branch_id = branches_cache[store_key]
+
+        barcode = pick(item, "ItemCode", "barcode")
+        price = pick(item, "ItemPrice", "price")
+        if not barcode or not branch_id or price is None:
+            skipped += 1
+            continue
+
+        prod = sb.table("products").upsert(
+            {
+                "barcode": barcode,
+                "name": pick(item, "ItemName", "name") or "",
+                "brand": pick(item, "ManufacturerName", "brand"),
+                "size_label": pick(item, "Quantity", "UnitQty", "size"),
+            },
+            on_conflict="barcode",
+        ).execute()
+        product_id = prod.data[0]["id"] if prod.data else None
+        if not product_id:
+            skipped += 1
+            continue
+
+        price_rows.append({
+            "branch_id": branch_id,
+            "product_id": product_id,
+            "price": price,
+            "unit_price": pick(item, "UnitOfMeasurePrice", "unit_price"),
+            "unit_measure": pick(item, "UnitOfMeasure", "unit_measure"),
+            "source_updated_at": pick(item, "PriceUpdateDate", "updated_at") or now,
+            "ingested_at": now,
+        })
+
+    if price_rows:
+        # Supabase/Postgres upsert מוגבל בכמות שורות לבקשה - שולחים ב"נגסות".
+        chunk = 500
+        for i in range(0, len(price_rows), chunk):
+            sb.table("prices").upsert(
+                price_rows[i:i + chunk], on_conflict="branch_id,product_id"
+            ).execute()
+    log.info("עודכנו %d מחירים. שורות שדולגו (חסר ברקוד/מחיר): %d", len(price_rows), skipped)
+
+
+def main():
+    enabled = os.environ.get("ENABLED_CHAINS", ",".join(DEFAULT_CHAINS)).split(",")
+    sb = get_supabase()
+    run = sb.table("ingestion_runs").insert({
+        "source": "gov_files", "started_at": datetime.now(timezone.utc).isoformat()
+    }).execute()
+    run_id = run.data[0]["id"] if run.data else None
+    try:
+        download_dumps(enabled)
+        parsed = parse_dumps()
+        upsert_to_supabase(sb, parsed)
+        if run_id:
+            sb.table("ingestion_runs").update({
+                "finished_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", run_id).execute()
+        log.info("הריצה הסתיימה בהצלחה")
+    except Exception as e:
+        log.exception("הריצה נכשלה")
+        if run_id:
+            sb.table("ingestion_runs").update({
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(e),
+            }).eq("id", run_id).execute()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
