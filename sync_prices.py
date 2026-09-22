@@ -43,9 +43,20 @@ def download_dumps(enabled_chains):
     os.makedirs(DUMP_DIR, exist_ok=True)
 
     log.info("מוריד קבצים עבור: %s", enabled_chains)
-    # שם הפרמטר המדויק (enabled_scrapers / limit / folder_name) עשוי להשתנות
-    # בין גרסאות הספרייה - יש לבדוק מול README נוכחי אם הקריאה הזו נכשלת.
-    task = ScarpingTask(enabled_scrapers=enabled_chains, files_types=None, dump_folder_name=DUMP_DIR)
+    # אומת מול הקוד האמיתי של הספרייה (example.py / main.py בריפו
+    # OpenIsraeliSupermarkets/israeli-supermarket-scarpers): הפרמטר לתיקיית
+    # היעד הוא base_storage_path בתוך output_configuration, לא dump_folder_name.
+    task = ScarpingTask(
+        enabled_scrapers=enabled_chains,
+        output_configuration={
+            "output_mode": "disk",
+            "base_storage_path": DUMP_DIR,
+        },
+        status_configuration={
+            "database_type": "json",
+            "base_path": os.path.join(DUMP_DIR, "status"),
+        },
+    )
     task.start()
     log.info("סיום הורדה. קבצים בתיקייה: %d", len(glob.glob(f"{DUMP_DIR}/**/*", recursive=True)))
 
