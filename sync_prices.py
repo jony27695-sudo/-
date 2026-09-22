@@ -149,7 +149,11 @@ def download_store_files(enabled_chains):
             "base_path": os.path.join(STORE_DUMP_DIR, "status"),
         },
     )
-    task.start(limit=1, when_date=datetime.now())
+    # בלי when_date=היום: קובצי רשימת סניפים מתעדכנים הרבה פחות תכוף
+    # ממחירים (לפעמים פעם בשבוע-חודש), אז הגבלה ל"היום בדיוק" גרמה לרוב
+    # הרשתות לא למצוא קובץ בכלל וכתובות רבות נשארו ריקות. limit=1 לבד
+    # לוקח את הקובץ העדכני ביותר הזמין, מה שקיימות ומעודכן שיהיה.
+    task.start(limit=1)
     task.join()
     n_files = len(glob.glob(f"{STORE_DUMP_DIR}/**/*", recursive=True))
     log.info("סיום הורדת קבצי סניפים. קבצים בתיקייה: %d", n_files)
