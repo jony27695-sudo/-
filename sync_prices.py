@@ -253,7 +253,18 @@ def update_branches_geo(sb, store_rows):
             continue
 
         if chain_code not in chains_by_code:
-            res = sb.table("chains").select("id").eq("chain_code", str(chain_code)).execute()
+            # לפני התיקון כאן היה רק select - אם קוד הרשת בקובץ הסניפים לא
+            # תאם *בדיוק* למחרוזת שכבר נשמרה בטבלת chains בשלב המחירים
+            # (למשל כי שדה chainid חסר בקובץ מחירים מסוים ואז נופלים על שם
+            # התיקייה כקוד חלופי), הסניף היה מדולג בשקט - וזה מה שקרה בפועל:
+            # 321 שורות סניפים נקראו אבל רק 3 עודכנו. עכשיו עושים upsert
+            # (לא רק select) כדי שכל קוד רשת אמיתי מקובץ הסניפים תמיד ימצא
+            # או ייצור שורת chain תואמת, ושום סניף אמיתי לא יאבד בגלל אי-התאמה.
+            chain_name = pick(row, "chainname") or f"רשת {chain_code}"
+            res = sb.table("chains").upsert(
+                {"name": chain_name, "chain_code": str(chain_code), "source": "store_files"},
+                on_conflict="chain_code",
+            ).execute()
             chains_by_code[chain_code] = res.data[0]["id"] if res.data else None
         chain_id = chains_by_code[chain_code]
         if not chain_id:
