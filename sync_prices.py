@@ -24,6 +24,8 @@ log = logging.getLogger("sync_prices")
 
 DUMP_DIR = "dumps"
 PARSED_DIR = "parsed"
+STORE_DUMP_DIR = "store_dumps"
+STORE_PARSED_DIR = "store_parsed"
 # שמות המפתח (ENUM) אומתו מול il_supermarket_scarper/utils/folders_name.py
 # בריפו המקורי - אלה השמות המדויקים והנכונים לרשתות רמי לוי, אושר עד,
 # יוחננוף וכרפור (ששילוב עם יינות ביתן תחת שם אחד בספרייה הזו).
@@ -118,6 +120,166 @@ def parse_dumps(enabled_chains):
     if rows:
         log.info("שמות העמודות שנמצאו בפועל (לצורך אבחון): %s", list(rows[0].keys()))
     return rows
+
+
+def download_store_files(enabled_chains):
+    """
+    מוריד את קובצי "רשימת הסניפים" (STORE_FILE) בנפרד מקובצי המחירים.
+    קבצים אלה מכילים את כתובת הסניף (שם, עיר, כתובת) - בלי זה אין דרך
+    לחשב מרחק אמיתי לסניף, ואנחנו לא רוצים להמציא מיקומים.
+    שם הפרמטר files_types ואפשרות הערך "STORE_FILE" אומתו מול הקוד המקור:
+    il_supermarket_scarper/utils/file_types.py (מחלקת FileTypesFilters).
+    """
+    from il_supermarket_scarper import ScarpingTask
+
+    if os.path.isdir(STORE_DUMP_DIR):
+        shutil.rmtree(STORE_DUMP_DIR)
+    os.makedirs(STORE_DUMP_DIR, exist_ok=True)
+
+    log.info("מוריד קבצי רשימת סניפים עבור: %s", enabled_chains)
+    task = ScarpingTask(
+        enabled_scrapers=enabled_chains,
+        files_types=["STORE_FILE"],
+        output_configuration={
+            "output_mode": "disk",
+            "base_storage_path": STORE_DUMP_DIR,
+        },
+        status_configuration={
+            "database_type": "json",
+            "base_path": os.path.join(STORE_DUMP_DIR, "status"),
+        },
+    )
+    task.start(limit=1, when_date=datetime.now())
+    task.join()
+    n_files = len(glob.glob(f"{STORE_DUMP_DIR}/**/*", recursive=True))
+    log.info("סיום הורדת קבצי סניפים. קבצים בתיקייה: %d", n_files)
+
+
+def parse_store_files(enabled_chains):
+    """מפענח את קובצי רשימת הסניפים לשורות עם שם/כתובת/עיר לכל סניף."""
+    from il_supermarket_parsers import ConvertingTask
+
+    if os.path.isdir(STORE_PARSED_DIR):
+        shutil.rmtree(STORE_PARSED_DIR)
+    os.makedirs(STORE_PARSED_DIR, exist_ok=True)
+
+    task = ConvertingTask(
+        source_configuration={"folder": STORE_DUMP_DIR},
+        output_configuration=[{"output_mode": "csv", "output_folder": STORE_PARSED_DIR}],
+        status_configuration={"database_type": "json", "base_path": STORE_PARSED_DIR},
+        enabled_parsers=enabled_chains,
+    )
+    task.start()
+    task.join()
+
+    csv_files = glob.glob(f"{STORE_PARSED_DIR}/**/*.csv", recursive=True)
+    rows = []
+    for path in csv_files:
+        with open(path, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                rows.append(row)
+    log.info("שורות סניפים (עם כתובת) שנקראו: %d", len(rows))
+    if rows:
+        # לא ידוע מראש בוודאות מוחלטת אילו שמות עמודות בדיוק יהיו כאן (לא
+        # נבדק בריצה אמיתית עדיין) - שורת אבחון כדי שאפשר יהיה לתקן בקלות
+        # בדיוק כמו שעשינו עם קובצי המחירים.
+        log.info("עמודות קובץ סניפים שנמצאו בפועל: %s", list(rows[0].keys()))
+    return rows
+
+
+def geocode(address, city):
+    """
+    ממיר כתובת טקסטואלית לקואורדינטות אמיתיות דרך Nominatim (OpenStreetMap) -
+    שירות גיאוקוד חינמי וציבורי, בלי צורך במפתח API.
+    לפי מדיניות השימוש של Nominatim: מקסימום בקשה אחת בשנייה, וצריך
+    User-Agent מזהה. אם הכתובת לא נמצאת - מחזירים None ולא ממציאים מיקום.
+    """
+    import json as _json
+    import time
+    import urllib.parse
+    import urllib.request
+
+    query = ", ".join(p for p in [address, city, "ישראל"] if p)
+    if not query.strip("ישראל, "):
+        return None
+
+    url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode({
+        "q": query, "format": "json", "limit": 1,
+    })
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "smart-basket-sync/1.0 (github actions job)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning("גיאוקוד נכשל עבור '%s': %s", query, e)
+        return None
+    finally:
+        time.sleep(1)  # לא לחרוג ממדיניות הקצב של Nominatim
+
+    if data:
+        return float(data[0]["lat"]), float(data[0]["lon"])
+    return None
+
+
+def update_branches_geo(sb, store_rows):
+    """
+    מעדכן את טבלת branches עם כתובת אמיתית ומיקום גיאוגרפי אמיתי (geocoded),
+    לסניפים שכבר נוצרו בשלב המחירים (upsert_to_supabase). בלי כתובת אמיתית
+    לא מגיאוקדים ולא ממציאים - השדה location נשאר ריק.
+    """
+
+    def pick(d, *keys):
+        for k in keys:
+            v = d.get(k)
+            if v not in (None, ""):
+                return v
+        return None
+
+    chains_by_code = {}
+    updated = 0
+    geocoded = 0
+
+    for row in store_rows:
+        chain_code = pick(row, "chainid")
+        store_code = pick(row, "storeid")
+        if not chain_code or not store_code:
+            continue
+
+        if chain_code not in chains_by_code:
+            res = sb.table("chains").select("id").eq("chain_code", str(chain_code)).execute()
+            chains_by_code[chain_code] = res.data[0]["id"] if res.data else None
+        chain_id = chains_by_code[chain_code]
+        if not chain_id:
+            continue
+
+        address = pick(row, "address")
+        city = pick(row, "city")
+        store_name = pick(row, "storename")
+
+        payload = {
+            "chain_id": chain_id,
+            "external_code": str(store_code),
+            "name": store_name or f"{chain_code} {store_code}",
+        }
+        if address:
+            payload["address"] = address
+        if city:
+            payload["city"] = city
+
+        if address or city:
+            geo = geocode(address, city)
+            if geo:
+                lat, lng = geo
+                payload["location"] = f"SRID=4326;POINT({lng} {lat})"
+                geocoded += 1
+
+        sb.table("branches").upsert(payload, on_conflict="chain_id,external_code").execute()
+        updated += 1
+
+    log.info("עודכנו %d סניפים עם כתובת, מתוכם %d עם מיקום גיאוגרפי מדויק", updated, geocoded)
 
 
 def upsert_to_supabase(sb, rows):
@@ -235,6 +397,13 @@ def main():
         download_dumps(enabled)
         parsed = parse_dumps(enabled)
         upsert_to_supabase(sb, parsed)
+
+        # שלב נפרד: כתובות ומיקום אמיתי לסניפים (כדי לתמוך בחיפוש לפי רדיוס
+        # בלי להמציא נתונים). רץ אחרי שלב המחירים כדי שה-chains/branches
+        # הבסיסיים כבר קיימים.
+        download_store_files(enabled)
+        store_rows = parse_store_files(enabled)
+        update_branches_geo(sb, store_rows)
         if run_id:
             sb.table("ingestion_runs").update({
                 "finished_at": datetime.now(timezone.utc).isoformat()
