@@ -78,12 +78,17 @@ def download_dumps(enabled_chains):
         log.warning("לא ירדו קבצים בכלל - כדאי לבדוק את שמות הרשתות ב-ENABLED_CHAINS")
 
 
-def parse_dumps():
+def parse_dumps(enabled_chains):
     """
     הופך את הקבצים הגולמיים ל-CSV אחיד, וקורא את שורות ה-CSV בחזרה.
     אומת מול README הרשמי של il_supermarket_parsers: ConvertingTask כותב
     קבצי CSV לתיקיית פלט (לא מחזיר אובייקט פייתון ישירות), וגם כאן צריך
     start() + join() כי הריצה היא ברקע.
+
+    בלי enabled_parsers, בריצה האמיתית ראינו בלוג שהספרייה דילגה על חלק
+    מהתיקיות ("Skipping folder dumps/RamiLevy... not in requested chains")
+    - כנראה יש לה רשימת ברירת מחדל משלה. מעבירים לה את אותה רשימת רשתות
+    שהורדנו, כדי לוודא שהיא בפועל מפענחת את כולן.
     """
     from il_supermarket_parsers import ConvertingTask
 
@@ -95,6 +100,7 @@ def parse_dumps():
         source_configuration={"folder": DUMP_DIR},
         output_configuration=[{"output_mode": "csv", "output_folder": PARSED_DIR}],
         status_configuration={"database_type": "json", "base_path": PARSED_DIR},
+        enabled_parsers=enabled_chains,
     )
     task.start()
     task.join()
@@ -131,6 +137,15 @@ def upsert_to_supabase(sb, rows):
                 return v
         return None
 
+    def chain_name_from_folder(item):
+        # עמודת found_folder מכילה נתיב כמו "dumps/Yohananof/..." - השם
+        # שבתיקייה קריא בהרבה משם המספר chainid, אז נשתמש בו כשם תצוגה.
+        folder = pick(item, "found_folder")
+        if not folder:
+            return None
+        parts = [p for p in str(folder).replace("\\", "/").split("/") if p and p != "dumps"]
+        return parts[0] if parts else None
+
     now = datetime.now(timezone.utc).isoformat()
     chains_cache = {}
     branches_cache = {}
@@ -138,33 +153,34 @@ def upsert_to_supabase(sb, rows):
     skipped = 0
 
     for item in rows:
-        chain_name = pick(item, "ChainName", "chain", "ChainId") or "לא ידוע"
-        if chain_name not in chains_cache:
+        # שמות העמודות בפועל ב-CSV שהספרייה יוצרת הם באותיות קטנות (אומת
+        # מול לוג ריצה אמיתית: chainid, storeid, itemcode, itemprice וכו').
+        chain_code = pick(item, "chainid")
+        chain_name = chain_name_from_folder(item) or chain_code or "לא ידוע"
+        if chain_code not in chains_cache:
             res = sb.table("chains").upsert(
-                {"name": chain_name, "chain_code": str(chain_name), "source": "gov_files"},
+                {"name": chain_name, "chain_code": str(chain_code or chain_name), "source": "gov_files"},
                 on_conflict="chain_code",
             ).execute()
-            chains_cache[chain_name] = res.data[0]["id"] if res.data else None
-        chain_id = chains_cache[chain_name]
+            chains_cache[chain_code] = res.data[0]["id"] if res.data else None
+        chain_id = chains_cache[chain_code]
 
-        store_code = pick(item, "StoreId", "StoreID", "store_id")
+        store_code = pick(item, "storeid")
         store_key = (chain_id, store_code)
         if store_key not in branches_cache:
             res = sb.table("branches").upsert(
                 {
                     "chain_id": chain_id,
                     "external_code": str(store_code),
-                    "name": pick(item, "StoreName", "store_name") or f"{chain_name} {store_code}",
-                    "address": pick(item, "Address", "address"),
-                    "city": pick(item, "City", "city"),
+                    "name": f"{chain_name} {store_code}",
                 },
                 on_conflict="chain_id,external_code",
             ).execute()
             branches_cache[store_key] = res.data[0]["id"] if res.data else None
         branch_id = branches_cache[store_key]
 
-        barcode = pick(item, "ItemCode", "barcode")
-        price = pick(item, "ItemPrice", "price")
+        barcode = pick(item, "itemcode")
+        price = pick(item, "itemprice")
         if not barcode or not branch_id or price is None:
             skipped += 1
             continue
@@ -172,9 +188,9 @@ def upsert_to_supabase(sb, rows):
         prod = sb.table("products").upsert(
             {
                 "barcode": barcode,
-                "name": pick(item, "ItemName", "name") or "",
-                "brand": pick(item, "ManufacturerName", "brand"),
-                "size_label": pick(item, "Quantity", "UnitQty", "size"),
+                "name": pick(item, "itemname") or "",
+                "brand": pick(item, "manufacturername"),
+                "size_label": pick(item, "quantity", "unitqty"),
             },
             on_conflict="barcode",
         ).execute()
@@ -187,9 +203,9 @@ def upsert_to_supabase(sb, rows):
             "branch_id": branch_id,
             "product_id": product_id,
             "price": price,
-            "unit_price": pick(item, "UnitOfMeasurePrice", "unit_price"),
-            "unit_measure": pick(item, "UnitOfMeasure", "unit_measure"),
-            "source_updated_at": pick(item, "PriceUpdateDate", "updated_at") or now,
+            "unit_price": pick(item, "unitofmeasureprice"),
+            "unit_measure": pick(item, "unitofmeasure"),
+            "source_updated_at": pick(item, "priceupdatetime") or now,
             "ingested_at": now,
         })
 
@@ -212,7 +228,7 @@ def main():
     run_id = run.data[0]["id"] if run.data else None
     try:
         download_dumps(enabled)
-        parsed = parse_dumps()
+        parsed = parse_dumps(enabled)
         upsert_to_supabase(sb, parsed)
         if run_id:
             sb.table("ingestion_runs").update({
