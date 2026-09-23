@@ -387,6 +387,22 @@ def upsert_to_supabase(sb, rows):
                 return v
         return None
 
+    def clean_ts(v):
+        # תיקון (תגלית מריצה אמיתית #25): מקורות הנתונים לפעמים שולחים את
+        # המחרוזת '' (שני תווי גרש) כסימון לשדה זמן חסר, במקום להשאיר את
+        # השדה ריק לגמרי או None. pick() לא תפס את זה כי "''" (עם הגרשיים
+        # בפועל) היא מחרוזת לא-ריקה מבחינת פייתון - זה גרם לשגיאת Postgres:
+        # invalid input syntax for type timestamp with time zone: "''"
+        # וקרס את כל שלב שמירת המחירים אחרי שההורדה והמוצרים כבר עבדו טוב.
+        # מנקים גרשיים ורווחים; אם לא נשאר כלום - מחזירים None כדי שהפולבאק
+        # ל-now (בקריאה למטה) יופעל כמו שצריך.
+        if v is None:
+            return None
+        if isinstance(v, str):
+            cleaned = v.strip().strip("'\"").strip()
+            return cleaned or None
+        return v
+
     def chain_name_from_folder(item):
         # עמודת found_folder מכילה נתיב כמו "dumps/Yohananof/..." - השם
         # שבתיקייה קריא בהרבה משם המספר chainid, אז נשתמש בו כשם תצוגה.
@@ -483,7 +499,7 @@ def upsert_to_supabase(sb, rows):
             "price": price,
             "unit_price": pick(item, "unitofmeasureprice"),
             "unit_measure": pick(item, "unitofmeasure"),
-            "source_updated_at": pick(item, "priceupdatetime") or now,
+            "source_updated_at": clean_ts(pick(item, "priceupdatetime")) or now,
             "ingested_at": now,
         })
 
