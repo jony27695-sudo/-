@@ -14,6 +14,7 @@ sync_prices.py
 import os
 import sys
 import csv
+import time
 import glob
 import shutil
 import logging
@@ -343,6 +344,32 @@ def update_branches_geo(sb, store_rows):
     log.info("עודכנו %d סניפים עם כתובת, מתוכם %d עם מיקום גיאוגרפי מדויק", updated, geocoded)
 
 
+def _execute_with_retry(query, attempts=5, base_delay=1.5):
+    """
+    עוטף .execute() בניסיונות חוזרים עם השהיה גדלה.
+    תגלית מריצה אמיתית (ריצה #23): Supabase/Cloudflare החזירו 502 Bad
+    Gateway זמני (שגיאת שרת חולפת, לא קשורה לתוכן הבקשה - אחרי מאות
+    בקשות upsert מוצלחות ברצף) וזה הפיל את כל הריצה כי לא היה שום ניסיון
+    חוזר. לא ממציאים תוכן - רק מנסים שוב כמה פעמים עם השהיה גדלה לפני
+    שבאמת מוותרים ומעלים את השגיאה הלאה.
+    """
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return query.execute()
+        except Exception as exc:  # pylint: disable=broad-except
+            last_exc = exc
+            if attempt == attempts:
+                raise
+            wait = base_delay * (2 ** (attempt - 1))
+            log.warning(
+                "בקשה ל-Supabase נכשלה (ניסיון %d/%d): %s - מנסים שוב בעוד %.1f שניות",
+                attempt, attempts, exc, wait,
+            )
+            time.sleep(wait)
+    raise last_exc
+
+
 def upsert_to_supabase(sb, rows):
     """
     מקבל רשימה שטוחה של שורות (כל שורה = פריט אחד בסניף אחד) וכותב אותן
@@ -372,6 +399,13 @@ def upsert_to_supabase(sb, rows):
     now = datetime.now(timezone.utc).isoformat()
     chains_cache = {}
     branches_cache = {}
+    # תגלית מריצה אמיתית (ריצה #23): בלי מטמון לפי ברקוד, כל שורת מחיר
+    # (יכולות להיות מאות אלפי שורות - ברקוד אחד כפול מאות סניפים) גרמה
+    # לבקשת upsert נפרדת לטבלת products, כלומר אותו מוצר נשלח שוב ושוב.
+    # זה גם איטי מאוד וגם מה שהוביל להיתקלות בשגיאת הרשת החולפת (502).
+    # עכשיו שולחים upsert למוצר רק בפעם הראשונה שרואים את הברקוד בריצה
+    # הזו, ומשתמשים ב-id השמור עבור כל שאר השורות עם אותו ברקוד.
+    products_cache = {}
     price_rows = []
     skipped = 0
 
@@ -381,24 +415,24 @@ def upsert_to_supabase(sb, rows):
         chain_code = pick(item, "chainid")
         chain_name = chain_name_from_folder(item) or chain_code or "לא ידוע"
         if chain_code not in chains_cache:
-            res = sb.table("chains").upsert(
+            res = _execute_with_retry(sb.table("chains").upsert(
                 {"name": chain_name, "chain_code": str(chain_code or chain_name), "source": "gov_files"},
                 on_conflict="chain_code",
-            ).execute()
+            ))
             chains_cache[chain_code] = res.data[0]["id"] if res.data else None
         chain_id = chains_cache[chain_code]
 
         store_code = pick(item, "storeid")
         store_key = (chain_id, store_code)
         if store_key not in branches_cache:
-            res = sb.table("branches").upsert(
+            res = _execute_with_retry(sb.table("branches").upsert(
                 {
                     "chain_id": chain_id,
                     "external_code": str(store_code),
                     "name": f"{chain_name} {store_code}",
                 },
                 on_conflict="chain_id,external_code",
-            ).execute()
+            ))
             branches_cache[store_key] = res.data[0]["id"] if res.data else None
         branch_id = branches_cache[store_key]
 
@@ -408,21 +442,23 @@ def upsert_to_supabase(sb, rows):
             skipped += 1
             continue
 
-        prod = sb.table("products").upsert(
-            {
-                "barcode": barcode,
-                "name": pick(item, "itemname") or "",
-                "brand": pick(item, "manufacturername"),
-                "size_label": pick(item, "quantity", "unitqty"),
-                # לטבלת products יש עמודת category עם NOT NULL constraint (ראינו
-                # בשגיאה: "null value in column category violates not-null
-                # constraint"). עדיין אין לנו סיווג אוטומטי לפי אזור בסופר, אז
-                # שמים ערך זמני - זה נושא נפרד לשיפור עתידי (שיוך אמיתי לפי קטגוריה).
-                "category": "לא מסווג",
-            },
-            on_conflict="barcode",
-        ).execute()
-        product_id = prod.data[0]["id"] if prod.data else None
+        if barcode not in products_cache:
+            prod = _execute_with_retry(sb.table("products").upsert(
+                {
+                    "barcode": barcode,
+                    "name": pick(item, "itemname") or "",
+                    "brand": pick(item, "manufacturername"),
+                    "size_label": pick(item, "quantity", "unitqty"),
+                    # לטבלת products יש עמודת category עם NOT NULL constraint (ראינו
+                    # בשגיאה: "null value in column category violates not-null
+                    # constraint"). עדיין אין לנו סיווג אוטומטי לפי אזור בסופר, אז
+                    # שמים ערך זמני - זה נושא נפרד לשיפור עתידי (שיוך אמיתי לפי קטגוריה).
+                    "category": "לא מסווג",
+                },
+                on_conflict="barcode",
+            ))
+            products_cache[barcode] = prod.data[0]["id"] if prod.data else None
+        product_id = products_cache[barcode]
         if not product_id:
             skipped += 1
             continue
@@ -454,9 +490,9 @@ def upsert_to_supabase(sb, rows):
         # Supabase/Postgres upsert מוגבל בכמות שורות לבקשה - שולחים ב"נגסות".
         chunk = 500
         for i in range(0, len(price_rows), chunk):
-            sb.table("prices").upsert(
+            _execute_with_retry(sb.table("prices").upsert(
                 price_rows[i:i + chunk], on_conflict="branch_id,product_id"
-            ).execute()
+            ))
     log.info("עודכנו %d מחירים. שורות שדולגו (חסר ברקוד/מחיר): %d", len(price_rows), skipped)
 
 
