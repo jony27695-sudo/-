@@ -960,7 +960,7 @@ function startRec() {
     rec = new SR(); rec.lang = 'he-IL'; rec.interimResults = true; rec.continuous = true;
     rec.onresult = e => {
       let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) { const tx = e.results[i][0].transcript; if (e.results[i].isFinal) fin += tx + ' '; else interim += tx; }
+      for (let i = e.resultIndex; i < e.results.length; i++) { const tx = e.results[i][0].transcript; if (e.results[i].isFinal) fin += tx + ', '; else interim += tx; }
       S.draft.text = (base + fin + interim).trim(); const ta = $('#txt'); if (ta) ta.value = S.draft.text;
     };
     rec.onerror = e => { S.rec.on = false; S.rec.err = (e.error === 'not-allowed' || e.error === 'service-not-allowed') ? 'אין הרשאת מיקרופון. אפשר להקליד את הרשימה בתיבה.' : 'ההקלטה נעצרה (' + e.error + '). אפשר להקליד את הרשימה.'; setRecUI(); };
