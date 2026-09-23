@@ -415,6 +415,19 @@ def upsert_to_supabase(sb, rows):
         })
 
     if price_rows:
+        # תגלית מריצה אמיתית: "ON CONFLICT DO UPDATE command cannot affect
+        # row a second time" - כשבאותה בקשת upsert יש פעמיים אותו צירוף
+        # (branch_id, product_id), פוסטגרס מסרב כי הוא לא יכול לעדכן את
+        # אותה שורה פעמיים באותה פקודה. זה קורה בפועל כשאותו ברקוד מופיע
+        # יותר מפעם אחת עבור אותו סניף בקובצי המקור (לדוגמה: הרשומה מופיעה
+        # גם בקובץ מחירים רגיל וגם בקובץ "מלא"). פותרים בלי להמציא כלום -
+        # פשוט שומרים רק את המופע האחרון שנקרא לכל צירוף (המחיר העדכני
+        # ביותר שראינו), לפני השליחה בפועל.
+        deduped = {}
+        for row in price_rows:
+            deduped[(row["branch_id"], row["product_id"])] = row
+        price_rows = list(deduped.values())
+
         # Supabase/Postgres upsert מוגבל בכמות שורות לבקשה - שולחים ב"נגסות".
         chunk = 500
         for i in range(0, len(price_rows), chunk):
