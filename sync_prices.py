@@ -399,15 +399,45 @@ def upsert_to_supabase(sb, rows):
     now = datetime.now(timezone.utc).isoformat()
     chains_cache = {}
     branches_cache = {}
-    # תגלית מריצה אמיתית (ריצה #23): בלי מטמון לפי ברקוד, כל שורת מחיר
-    # (יכולות להיות מאות אלפי שורות - ברקוד אחד כפול מאות סניפים) גרמה
-    # לבקשת upsert נפרדת לטבלת products, כלומר אותו מוצר נשלח שוב ושוב.
-    # זה גם איטי מאוד וגם מה שהוביל להיתקלות בשגיאת הרשת החולפת (502).
-    # עכשיו שולחים upsert למוצר רק בפעם הראשונה שרואים את הברקוד בריצה
-    # הזו, ומשתמשים ב-id השמור עבור כל שאר השורות עם אותו ברקוד.
-    products_cache = {}
     price_rows = []
     skipped = 0
+
+    # תיקון נוסף (אחרי ריצה #24 בפועל): גם עם מטמון לפי ברקוד, עדיין
+    # נשלחה בקשת upsert נפרדת לכל ברקוד *חדש* - עם כ-12 אלף מוצרים
+    # ייחודיים ובקשה כל כ-200 מילישניות, זה עדיין לוקח כ-40 דקות רק
+    # לשלב המוצרים ומסכן חריגה נוספת מ-45 הדקות המותרות ל-workflow.
+    # הפתרון: לאסוף קודם את כל המוצרים הייחודיים בלי שום קריאת רשת,
+    # ואז לשלוח אותם ב"נגסות" גדולות (בדיוק כמו שכבר נעשה לטבלת prices
+    # למטה) - בקשה אחת לכל 500 מוצרים במקום בקשה נפרדת לכל מוצר.
+    unique_products = {}
+    for item in rows:
+        barcode = pick(item, "itemcode")
+        price = pick(item, "itemprice")
+        if not barcode or price is None:
+            continue
+        if barcode not in unique_products:
+            unique_products[barcode] = {
+                "barcode": barcode,
+                "name": pick(item, "itemname") or "",
+                "brand": pick(item, "manufacturername"),
+                "size_label": pick(item, "quantity", "unitqty"),
+                # לטבלת products יש עמודת category עם NOT NULL constraint (ראינו
+                # בשגיאה: "null value in column category violates not-null
+                # constraint"). עדיין אין לנו סיווג אוטומטי לפי אזור בסופר, אז
+                # שמים ערך זמני - זה נושא נפרד לשיפור עתידי (שיוך אמיתי לפי קטגוריה).
+                "category": "לא מסווג",
+            }
+
+    products_cache = {}
+    product_rows = list(unique_products.values())
+    products_chunk = 500
+    for i in range(0, len(product_rows), products_chunk):
+        res = _execute_with_retry(sb.table("products").upsert(
+            product_rows[i:i + products_chunk], on_conflict="barcode"
+        ))
+        for row in (res.data or []):
+            products_cache[row["barcode"]] = row["id"]
+    log.info("עודכנו %d מוצרים ייחודיים (מתוך %d שורות מקור)", len(products_cache), len(rows))
 
     for item in rows:
         # שמות העמודות בפועל ב-CSV שהספרייה יוצרת הם באותיות קטנות (אומת
@@ -442,23 +472,7 @@ def upsert_to_supabase(sb, rows):
             skipped += 1
             continue
 
-        if barcode not in products_cache:
-            prod = _execute_with_retry(sb.table("products").upsert(
-                {
-                    "barcode": barcode,
-                    "name": pick(item, "itemname") or "",
-                    "brand": pick(item, "manufacturername"),
-                    "size_label": pick(item, "quantity", "unitqty"),
-                    # לטבלת products יש עמודת category עם NOT NULL constraint (ראינו
-                    # בשגיאה: "null value in column category violates not-null
-                    # constraint"). עדיין אין לנו סיווג אוטומטי לפי אזור בסופר, אז
-                    # שמים ערך זמני - זה נושא נפרד לשיפור עתידי (שיוך אמיתי לפי קטגוריה).
-                    "category": "לא מסווג",
-                },
-                on_conflict="barcode",
-            ))
-            products_cache[barcode] = prod.data[0]["id"] if prod.data else None
-        product_id = products_cache[barcode]
+        product_id = products_cache.get(barcode)
         if not product_id:
             skipped += 1
             continue
