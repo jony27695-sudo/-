@@ -62,8 +62,18 @@ def download_dumps(enabled_chains):
     # אומת מול הקוד האמיתי של הספרייה (example.py / main.py בריפו
     # OpenIsraeliSupermarkets/israeli-supermarket-scarpers): הפרמטר לתיקיית
     # היעד הוא base_storage_path בתוך output_configuration, לא dump_folder_name.
+    # תיקון נוסף אחרי בדיקה בפועל: בלי files_types הספרייה מורידה גם
+    # PROMO_FILE/PROMO_FULL_FILE/PRICE_FILE, לא רק PRICE_FULL_FILE - בריצה
+    # אמיתית זה הכפיל הרבה את נפח ההורדה/הפענוח וגרם לחריגה מ-45 הדקות
+    # המותרות ל-workflow (נצפה בפועל: "The job has exceeded the maximum
+    # execution time of 45m0s"). האפליקציה משתמשת רק במחירים בפועל (לא
+    # במבצעים), אז מגבילים להורדת PRICE_FULL_FILE בלבד - קובץ המחירים
+    # המלא העדכני ביותר לכל סניף. שם הפרמטר files_types אומת מול הקוד
+    # המקור: il_supermarket_scarper/utils/file_types.py (FileTypesFilters),
+    # ומשמש כבר באותו אופן בפונקציה download_store_files למטה.
     task = ScarpingTask(
         enabled_scrapers=enabled_chains,
+        files_types=["PRICE_FULL_FILE"],
         output_configuration={
             "output_mode": "disk",
             "base_storage_path": DUMP_DIR,
