@@ -146,6 +146,7 @@ def parse_dumps(enabled_chains):
         # קוד רשת מקובץ אחד למשנהו.
         last_chainid = None
         last_chainname = None
+        last_storeid = None
         last_found_folder = None
         last_file_name = None
         with open(path, encoding="utf-8", newline="") as f:
@@ -159,6 +160,14 @@ def parse_dumps(enabled_chains):
                     last_chainname = row["chainname"]
                 elif last_chainname:
                     row["chainname"] = last_chainname
+                # תיקון נוסף (תגלית בבדיקה בפועל מול Supabase אחרי הריצה
+                # הקודמת): גם storeid מתגלה כשדה "כל הקובץ" שמופיע רק בשורה
+                # הראשונה של כל קובץ מחירים - בלעדיו כמעט כל השורות נפלו
+                # לסניף גנרי "<שם רשת> None" במקום הסניף האמיתי.
+                if row.get("storeid"):
+                    last_storeid = row["storeid"]
+                elif last_storeid:
+                    row["storeid"] = last_storeid
                 if row.get("found_folder"):
                     last_found_folder = row["found_folder"]
                 elif last_found_folder:
