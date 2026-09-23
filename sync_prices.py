@@ -19,6 +19,17 @@ import shutil
 import logging
 from datetime import datetime, timezone
 
+# תיקון: קובצי ה-CSV שנוצרים מפענוח המחירים (במיוחד PriceFull עם הרבה
+# עמודות/תיאורים ארוכים) הכילו שדה שחרג מהמגבלה הדיפולטית של מודול ה-csv
+# (131072 תווים), מה שגרם ל-_csv.Error: field larger than field limit
+# וקרס את כל שלב הפענוח (parse_dumps) - זו הייתה הסיבה שהריצה נכשלה אחרי
+# שהורדת הקבצים עצמה כבר עבדה כמו שצריך (עם תיקון ה-limit שהוסר קודם).
+try:
+    csv.field_size_limit(sys.maxsize)
+except OverflowError:
+    # בפלטפורמות מסוימות sys.maxsize גדול מדי ל-C long - נופלים למקסימום התקין
+    csv.field_size_limit(2**31 - 1)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sync_prices")
 
