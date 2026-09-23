@@ -136,9 +136,37 @@ def parse_dumps(enabled_chains):
 
     rows = []
     for path in csv_files:
+        # תיקון (תגלית מריצה אמיתית #27, לאחר בדיקת לוגים ישירה מול Supabase):
+        # אותה תופעה בדיוק שכבר טופלה למטה ב-parse_store_files - שדות ברמת
+        # "כל הקובץ" (chainid, chainname, found_folder, file_name) מופיעים רק
+        # בשורה *הראשונה* של כל קובץ מקור, ובכל שאר השורות הם ריקים. בלי מילוי
+        # קדימה כאן, ל-99% משורות המחיר לא היה chainid/found_folder בכלל, ולכן
+        # upsert_to_supabase לא הצליח לשייך אותן לרשת/סניף אמיתיים ונפלו
+        # לרשומת "לא ידוע" (chain_id=1). מאפסים בכל קובץ חדש כדי לא לדלוף
+        # קוד רשת מקובץ אחד למשנהו.
+        last_chainid = None
+        last_chainname = None
+        last_found_folder = None
+        last_file_name = None
         with open(path, encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
+                if row.get("chainid"):
+                    last_chainid = row["chainid"]
+                elif last_chainid:
+                    row["chainid"] = last_chainid
+                if row.get("chainname"):
+                    last_chainname = row["chainname"]
+                elif last_chainname:
+                    row["chainname"] = last_chainname
+                if row.get("found_folder"):
+                    last_found_folder = row["found_folder"]
+                elif last_found_folder:
+                    row["found_folder"] = last_found_folder
+                if row.get("file_name"):
+                    last_file_name = row["file_name"]
+                elif last_file_name:
+                    row["file_name"] = last_file_name
                 rows.append(row)
     log.info("סה״כ שורות פריטים שנקראו: %d", len(rows))
     if rows:
