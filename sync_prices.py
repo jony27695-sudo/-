@@ -179,28 +179,36 @@ def parse_store_files(enabled_chains):
     csv_files = glob.glob(f"{STORE_PARSED_DIR}/**/*.csv", recursive=True)
     rows = []
     for path in csv_files:
+        # תגלית מבדיקה בפועל של הלוג: בקובץ ה-CSV שממיר את קובץ הסניפים,
+        # שדות ברמת "כל הקובץ" (chainid, chainname, found_folder, file_name,
+        # תאריכי עדכון) מופיעים רק בשורה *הראשונה* של כל קובץ מקור - בכל
+        # שאר השורות של אותו קובץ הם ריקים (בעוד ש-storeid/address/city
+        # כן קיימים בכל שורה). זו הסיבה האמיתית לכך שרק 4 מתוך 321 שורות
+        # "עברו" קודם - forward-fill: ממלאים כל שורה ריקה בערך האחרון
+        # הלא-ריק שראינו *באותו קובץ*, כדי לא "לדלוף" קוד רשת מקובץ אחד
+        # לקובץ אחר.
+        last_chainid = None
+        last_chainname = None
         with open(path, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
+                if row.get("chainid"):
+                    last_chainid = row["chainid"]
+                elif last_chainid:
+                    row["chainid"] = last_chainid
+                if row.get("chainname"):
+                    last_chainname = row["chainname"]
+                elif last_chainname:
+                    row["chainname"] = last_chainname
                 rows.append(row)
     log.info("שורות סניפים (עם כתובת) שנקראו: %d", len(rows))
     if rows:
-        # לא ידוע מראש בוודאות מוחלטת אילו שמות עמודות בדיוק יהיו כאן (לא
-        # נבדק בריצה אמיתית עדיין) - שורת אבחון כדי שאפשר יהיה לתקן בקלות
-        # בדיוק כמו שעשינו עם קובצי המחירים.
         log.info("עמודות קובץ סניפים שנמצאו בפועל: %s", list(rows[0].keys()))
-        # אבחון נוסף: בריצה הקודמת רק 4 מתוך 321 שורות עברו את הבדיקה
-        # "יש chainid ו-storeid" - כדי להבין למה, מדפיסים כאן את כל
-        # הערכים (לא רק שמות העמודות) של כמה שורות אמיתיות, כדי לראות אם
-        # השדות באמת ריקים ברוב השורות או שיש כאן משהו אחר.
-        sample = rows[:3] + (rows[160:163] if len(rows) > 160 else [])
-        for i, r in enumerate(sample):
-            log.info("שורת סניף לדוגמה #%d: %s", i, dict(r))
         with_chain_and_store = sum(
             1 for r in rows
             if (r.get("chainid") not in (None, "")) and (r.get("storeid") not in (None, ""))
         )
         log.info(
-            "מתוך %d שורות: ל-%d יש גם chainid וגם storeid לא-ריקים",
+            "מתוך %d שורות: ל-%d יש גם chainid וגם storeid לא-ריקים (אחרי מילוי קדימה)",
             len(rows), with_chain_and_store,
         )
     return rows
