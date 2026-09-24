@@ -1029,6 +1029,14 @@ async function analyze() {
   S.draft.items = S.draft.items.concat(items); S.draft.mode = mode; S.draft.text = '';
   persist(); S.view = 'review'; render(); window.scrollTo(0, 0);
 }
+async function rememberedStillValid(it, id) {
+try { await govEnsureProducts([id]); } catch (e) {}
+const p = provider.product(id);
+if (!p) return false;
+const toks = norm(it.name).split(' ').filter(Boolean);
+const pWords = norm(p.name || '').split(' ');
+return toks.length > 0 && toks.every(t => pWords.some(w => w === t || w.startsWith(t)));
+}
 async function startMatching() {
   if (!S.loc) { toast('קודם בוחרים מיקום'); go('location'); return; }
   const queue = [];
