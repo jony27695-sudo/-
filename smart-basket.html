@@ -1049,11 +1049,20 @@ const p = provider.product(id);
 if (!p) return false;
 const toks = norm(it.name).split(' ').filter(Boolean);
 const pWords = norm(p.name || '').split(' ');
-return toks.length > 0 && toks.every(t => pWords.includes(t));
+if (!(toks.length > 0 && toks.every(t => pWords.includes(t)))) return false;
+if (GOV.branches && GOV.branches.length) {
+try {
+const branchIds = GOV.branches.map(b => b.id);
+const rows = await sbFetch('/rest/v1/prices?select=branch_id&product_id=eq.' + id + '&branch_id=in.(' + branchIds.join(',') + ')&limit=1') || [];
+if (!rows.length) return false;
+} catch (e) {}
+}
+return true;
 }
 async function startMatching() {
   if (!S.loc) { toast('קודם בוחרים מיקום'); go('location'); return; }
-  const queue = [];
+  try { await govPreloadBranches(S.loc, S.radius); } catch (e) {}
+const queue = [];
   for (const it of S.draft.items) {
     if (it.skip) continue;
     if (it.productId) continue;
