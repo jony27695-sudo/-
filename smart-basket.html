@@ -440,68 +440,69 @@ function govLastSync() {
   return GOV.lastSyncPromise;
 }
 async function govSearchProducts(query) {
-const toks = norm(query).split(' ').filter(t => t.length >= 2).slice(0, 4);
-if (!toks.length) return [];
-const enc = encodeURIComponent;
-const fields = 'select=id,barcode,name,brand,size_label,size_amount,size_unit,sell_by,category,family';
-// תיקון נוסף: גם בתוך שכבת "גבול מילה", מילה נפוצה (כמו "עוף", "שמן", "קפה") יכולה
-// להחזיר מאות תוצאות. שליפה של 60 בסדר א"ב הייתה גורמת למוצרים שבהם המילה היא
-// *המילה הראשונה* בשם (ההתאמה הכי טובה, כמו "עוף שלם", "שמן זית") להידחק החוצה
-// ע"י מוצרים שהמילה מופיעה בהם באמצע/בסוף ומתחילים באות מוקדמת יותר בא"ב (כמו
-// "גריל עוף", "12 צבעי שמן"). לכן שכבת "מילה ראשונה" נשלפת עכשיו בנפרד, בלי
-// להתחרות על אותו תקציב עם שכבת "מילה במקום אחר".
-function firstWordConds(t) { return [`name.ilike.${enc(t + ' *')}`, `name.eq.${enc(t)}`]; }
-function laterWordConds(t) { return [`name.ilike.${enc('* ' + t + ' *')}`, `name.ilike.${enc('* ' + t)}`]; }
-function substrConds(t) { return [`name.ilike.${enc('*' + t + '*')}`]; }
-function buildFilter(condsFn, tokens) {
-const groups = tokens.map(t => { const c = condsFn(t); return c.length > 1 ? `or(${c.join(',')})` : c[0]; });
-if (groups.length === 1) {
-const c = condsFn(tokens[0]);
-return c.length > 1 ? `or=(${c.join(',')})` : c[0];
-}
-return `and=(${groups.join(',')})`;
-}
-async function fetchTier(filterPart, limit, excludeIds) {
-let qs = `${fields}&limit=${limit}&order=name.asc&${filterPart}`;
-if (excludeIds.size) qs += `&id=not.in.(${[...excludeIds].join(',')})`;
-return await sbFetch('/rest/v1/products?' + qs) || [];
-}
-const excludeIds = new Set();
-let results = await fetchTier(buildFilter(firstWordConds, toks), 40, excludeIds);
-results.forEach(r => excludeIds.add(r.id));
-if (results.length < 40) {
-const more = await fetchTier(buildFilter(laterWordConds, toks), 60, excludeIds);
-more.forEach(r => excludeIds.add(r.id));
-results = results.concat(more);
-}
-if (results.length < 10) {
-const more2 = await fetchTier(buildFilter(substrConds, toks), 20, excludeIds);
-results = results.concat(more2);
-}
-let priceIds = new Set();
-if (GOV.branches && GOV.branches.length && results.length) {
-try {
-const branchIds = GOV.branches.map(b => b.id);
-const candIds = results.slice(0, 80).map(r => r.id);
-const priceRows = await sbFetch('/rest/v1/prices?select=product_id&product_id=in.(' + candIds.join(',') + ')&branch_id=in.(' + branchIds.join(',') + ')') || [];
-priceIds = new Set(priceRows.map(r => r.product_id));
-} catch (e) {}
-}
-function scoreOf(r) {
-const words = norm(r.name || '').split(' ');
-let score = 0;
-toks.forEach((t, idx) => {
-if (words[0] === t) score += 10 - idx;
-else if (words.includes(t)) score += 5 - idx;
-else if (words.some(w => w.startsWith(t))) score += 1;
-});
-if (priceIds.has(Number(r.id))) score += 3;
-return score;
-}
-results.sort((a, b) => scoreOf(b) - scoreOf(a) || (a.name || '').length - (b.name || '').length);
-const top = results.slice(0, 20);
-top.forEach(r => GOV.products.set(String(r.id), mapGovProduct(r)));
-return top.map(r => GOV.products.get(String(r.id)));
+  const toks = norm(query).split(' ').filter(t => t.length >= 2).slice(0, 4);
+  if (!toks.length) return [];
+  const enc = encodeURIComponent;
+  const fields = 'select=id,barcode,name,brand,size_label,size_amount,size_unit,sell_by,category,family';
+  function firstWordConds(t) { return [`name.ilike.${enc(t + ' *')}`, `name.eq.${enc(t)}`]; }
+  function laterWordConds(t) { return [`name.ilike.${enc('* ' + t + ' *')}`, `name.ilike.${enc('* ' + t)}`]; }
+  function substrConds(t) { return [`name.ilike.${enc('*' + t + '*')}`]; }
+  function buildFilter(condsFn, tokens) {
+    const groups = tokens.map(t => { const c = condsFn(t); return c.length > 1 ? `or(${c.join(',')})` : c[0]; });
+    if (groups.length === 1) {
+      const c = condsFn(tokens[0]);
+      return c.length > 1 ? `or=(${c.join(',')})` : c[0];
+    }
+    return `and=(${groups.join(',')})`;
+  }
+  async function fetchTier(filterPart, limit, excludeIds) {
+    let qs = `${fields}&limit=${limit}&order=name.asc&${filterPart}`;
+    if (excludeIds.size) qs += `&id=not.in.(${[...excludeIds].join(',')})`;
+    return await sbFetch('/rest/v1/products?' + qs) || [];
+  }
+  const excludeIds = new Set();
+  let results = await fetchTier(buildFilter(firstWordConds, toks), 40, excludeIds);
+  results.forEach(r => excludeIds.add(r.id));
+  if (results.length < 40) {
+    const more = await fetchTier(buildFilter(laterWordConds, toks), 60, excludeIds);
+    more.forEach(r => excludeIds.add(r.id));
+    results = results.concat(more);
+  }
+  if (results.length < 10) {
+    const more2 = await fetchTier(buildFilter(substrConds, toks), 20, excludeIds);
+    results = results.concat(more2);
+  }
+  let chainCovByProduct = new Map();
+  if (GOV.branches && GOV.branches.length && results.length) {
+    try {
+      const branchIds = GOV.branches.map(b => b.id);
+      const chainByBranch = new Map();
+      GOV.branches.forEach(b => chainByBranch.set(String(b.id), (b.chain && b.chain.name) || String(b.chain_id || '')));
+      const candIds = results.slice(0, 80).map(r => r.id);
+      const priceRows = await sbFetch('/rest/v1/prices?select=product_id,branch_id&product_id=in.(' + candIds.join(',') + ')&branch_id=in.(' + branchIds.join(',') + ')') || [];
+      priceRows.forEach(row => {
+        const pid = Number(row.product_id);
+        if (!chainCovByProduct.has(pid)) chainCovByProduct.set(pid, new Set());
+        chainCovByProduct.get(pid).add(chainByBranch.get(String(row.branch_id)) || String(row.branch_id));
+      });
+    } catch (e) {}
+  }
+  function scoreOf(r) {
+    const words = norm(r.name || '').split(' ');
+    let score = 0;
+    toks.forEach((t, idx) => {
+      if (words[0] === t) score += 10 - idx;
+      else if (words.includes(t)) score += 5 - idx;
+      else if (words.some(w => w.startsWith(t))) score += 1;
+    });
+    const chains = chainCovByProduct.get(Number(r.id));
+    if (chains && chains.size) score += 3 + Math.min(chains.size - 1, 4) * 2;
+    return score;
+  }
+  results.sort((a, b) => scoreOf(b) - scoreOf(a) || (a.name || '').length - (b.name || '').length);
+  const top = results.slice(0, 20);
+  top.forEach(r => GOV.products.set(String(r.id), mapGovProduct(r)));
+  return top.map(r => GOV.products.get(String(r.id)));
 }
 async function govSearchAndPrice(query, it) {
   let products = await govSearchProducts(query);
