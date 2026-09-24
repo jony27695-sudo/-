@@ -440,54 +440,58 @@ function govLastSync() {
   return GOV.lastSyncPromise;
 }
 async function govSearchProducts(query) {
-  const toks = norm(query).split(' ').filter(t => t.length >= 2).slice(0, 4);
-  if (!toks.length) return [];
-  const enc = encodeURIComponent;
-  const fields = 'select=id,barcode,name,brand,size_label,size_amount,size_unit,sell_by,category,family';
-  // תיקון (גילוי בבדיקה בפועל): ILIKE %token% לבד מחזיר מאות תוצאות (כולל התאמות
-  // בתוך מילים ארוכות יותר כמו חלבון/חלבה), וכשהתוצאות ממוינות אלפביתית ומוגבלות
-  // ל-limit קטן, המוצרים הרלוונטיים האמיתיים (חלב 3% וכו') נדחקים הרחק מעבר לגבול
-  // ולא מגיעים בכלל. במקום זה בונים תנאי "גבול מילה" (word boundary) בצד השרת.
-  function wordBoundaryConds(t) {
-    return [`name.ilike.${enc(t + ' *')}`, `name.ilike.${enc('* ' + t + ' *')}`, `name.ilike.${enc('* ' + t)}`, `name.eq.${enc(t)}`];
-  }
-  function substrConds(t) { return [`name.ilike.${enc('*' + t + '*')}`]; }
-  function buildFilter(condsFn, tokens) {
-    const groups = tokens.map(t => { const c = condsFn(t); return c.length > 1 ? `or(${c.join(',')})` : c[0]; });
-    if (groups.length === 1) {
-      const c = condsFn(tokens[0]);
-      return c.length > 1 ? `or=(${c.join(',')})` : c[0];
-    }
-    return `and=(${groups.join(',')})`;
-  }
-  async function fetchTier(filterPart, limit, excludeIds) {
-    let qs = `${fields}&limit=${limit}&order=name.asc&${filterPart}`;
-    if (excludeIds.size) qs += `&id=not.in.(${[...excludeIds].join(',')})`;
-    return await sbFetch('/rest/v1/products?' + qs) || [];
-  }
-  const excludeIds = new Set();
-  let results = await fetchTier(buildFilter(wordBoundaryConds, toks), 60, excludeIds);
-  results.forEach(r => excludeIds.add(r.id));
-  if (results.length < 10) {
-    const more = await fetchTier(buildFilter(substrConds, toks), 20, excludeIds);
-    results = results.concat(more);
-  }
-  // מיון סופי: התאמת המילה הראשונה בשם עדיפה (זה מה שאדם מצפה לראות ראשון),
-  // אחריה התאמת מילה שלמה בכל מיקום, ולבסוף שאר ההתאמות
-  function scoreOf(r) {
-    const words = norm(r.name || '').split(' ');
-    let score = 0;
-    toks.forEach((t, idx) => {
-      if (words[0] === t) score += 10 - idx;
-      else if (words.includes(t)) score += 5 - idx;
-      else if (words.some(w => w.startsWith(t))) score += 1;
-    });
-    return score;
-  }
-  results.sort((a, b) => scoreOf(b) - scoreOf(a) || (a.name || '').length - (b.name || '').length);
-  const top = results.slice(0, 20);
-  top.forEach(r => GOV.products.set(String(r.id), mapGovProduct(r)));
-  return top.map(r => GOV.products.get(String(r.id)));
+const toks = norm(query).split(' ').filter(t => t.length >= 2).slice(0, 4);
+if (!toks.length) return [];
+const enc = encodeURIComponent;
+const fields = 'select=id,barcode,name,brand,size_label,size_amount,size_unit,sell_by,category,family';
+// תיקון נוסף: גם בתוך שכבת "גבול מילה", מילה נפוצה (כמו "עוף", "שמן", "קפה") יכולה
+// להחזיר מאות תוצאות. שליפה של 60 בסדר א"ב הייתה גורמת למוצרים שבהם המילה היא
+// *המילה הראשונה* בשם (ההתאמה הכי טובה, כמו "עוף שלם", "שמן זית") להידחק החוצה
+// ע"י מוצרים שהמילה מופיעה בהם באמצע/בסוף ומתחילים באות מוקדמת יותר בא"ב (כמו
+// "גריל עוף", "12 צבעי שמן"). לכן שכבת "מילה ראשונה" נשלפת עכשיו בנפרד, בלי
+// להתחרות על אותו תקציב עם שכבת "מילה במקום אחר".
+function firstWordConds(t) { return [`name.ilike.${enc(t + ' *')}`, `name.eq.${enc(t)}`]; }
+function laterWordConds(t) { return [`name.ilike.${enc('* ' + t + ' *')}`, `name.ilike.${enc('* ' + t)}`]; }
+function substrConds(t) { return [`name.ilike.${enc('*' + t + '*')}`]; }
+function buildFilter(condsFn, tokens) {
+const groups = tokens.map(t => { const c = condsFn(t); return c.length > 1 ? `or(${c.join(',')})` : c[0]; });
+if (groups.length === 1) {
+const c = condsFn(tokens[0]);
+return c.length > 1 ? `or=(${c.join(',')})` : c[0];
+}
+return `and=(${groups.join(',')})`;
+}
+async function fetchTier(filterPart, limit, excludeIds) {
+let qs = `${fields}&limit=${limit}&order=name.asc&${filterPart}`;
+if (excludeIds.size) qs += `&id=not.in.(${[...excludeIds].join(',')})`;
+return await sbFetch('/rest/v1/products?' + qs) || [];
+}
+const excludeIds = new Set();
+let results = await fetchTier(buildFilter(firstWordConds, toks), 40, excludeIds);
+results.forEach(r => excludeIds.add(r.id));
+if (results.length < 40) {
+const more = await fetchTier(buildFilter(laterWordConds, toks), 60, excludeIds);
+more.forEach(r => excludeIds.add(r.id));
+results = results.concat(more);
+}
+if (results.length < 10) {
+const more2 = await fetchTier(buildFilter(substrConds, toks), 20, excludeIds);
+results = results.concat(more2);
+}
+function scoreOf(r) {
+const words = norm(r.name || '').split(' ');
+let score = 0;
+toks.forEach((t, idx) => {
+if (words[0] === t) score += 10 - idx;
+else if (words.includes(t)) score += 5 - idx;
+else if (words.some(w => w.startsWith(t))) score += 1;
+});
+return score;
+}
+results.sort((a, b) => scoreOf(b) - scoreOf(a) || (a.name || '').length - (b.name || '').length);
+const top = results.slice(0, 20);
+top.forEach(r => GOV.products.set(String(r.id), mapGovProduct(r)));
+return top.map(r => GOV.products.get(String(r.id)));
 }
 async function govSearchAndPrice(query, it) {
   let products = await govSearchProducts(query);
