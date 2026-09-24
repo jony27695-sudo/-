@@ -442,11 +442,23 @@ function govLastSync() {
 async function govSearchProducts(query) {
   const toks = norm(query).split(' ').filter(t => t.length >= 2).slice(0, 4);
   if (!toks.length) return [];
-  let qs = 'select=id,barcode,name,brand,size_label,size_amount,size_unit,sell_by,category,family&limit=20&order=name.asc';
+  let qs = 'select=id,barcode,name,brand,size_label,size_amount,size_unit,sell_by,category,family&limit=40&order=name.asc';
   toks.forEach(t => { qs += '&name=ilike.*' + encodeURIComponent(t) + '*'; });
   const rows = await sbFetch('/rest/v1/products?' + qs) || [];
   rows.forEach(r => GOV.products.set(String(r.id), mapGovProduct(r)));
-  return rows.map(r => GOV.products.get(String(r.id)));
+  // דירוג לפי רלוונטיות: התאמת מילה שלמה (גבולות מילה) עדיפה על הופעה כתת-מחרוזת
+  // בתוך מילה ארוכה יותר (למשל "חלב" מול "חלבון"/"חלבה") - ILIKE לבד לא מבדיל ביניהן.
+  const scored = rows.map(r => {
+    const nameNorm = norm(r.name || '');
+    const words = nameNorm.split(' ');
+    let score = 0;
+    for (const t of toks) {
+      if (words.includes(t)) score += 3;
+      else if (words.some(w => w.startsWith(t))) score += 1;
+    }
+    return {r, score};
+  }).sort((a, b) => b.score - a.score || (a.r.name || '').length - (b.r.name || '').length);
+  return scored.slice(0, 20).map(x => GOV.products.get(String(x.r.id)));
 }
 async function govSearchAndPrice(query, it) {
   let products = await govSearchProducts(query);
