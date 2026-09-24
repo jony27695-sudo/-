@@ -478,6 +478,15 @@ if (results.length < 10) {
 const more2 = await fetchTier(buildFilter(substrConds, toks), 20, excludeIds);
 results = results.concat(more2);
 }
+let priceIds = new Set();
+if (GOV.branches && GOV.branches.length && results.length) {
+try {
+const branchIds = GOV.branches.map(b => b.id);
+const candIds = results.slice(0, 80).map(r => r.id);
+const priceRows = await sbFetch('/rest/v1/prices?select=product_id&product_id=in.(' + candIds.join(',') + ')&branch_id=in.(' + branchIds.join(',') + ')') || [];
+priceIds = new Set(priceRows.map(r => r.product_id));
+} catch (e) {}
+}
 function scoreOf(r) {
 const words = norm(r.name || '').split(' ');
 let score = 0;
@@ -486,6 +495,7 @@ if (words[0] === t) score += 10 - idx;
 else if (words.includes(t)) score += 5 - idx;
 else if (words.some(w => w.startsWith(t))) score += 1;
 });
+if (priceIds.has(Number(r.id))) score += 3;
 return score;
 }
 results.sort((a, b) => scoreOf(b) - scoreOf(a) || (a.name || '').length - (b.name || '').length);
