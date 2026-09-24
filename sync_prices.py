@@ -41,7 +41,7 @@ STORE_PARSED_DIR = "store_parsed"
 # שמות המפתח (ENUM) אומתו מול il_supermarket_scarper/utils/folders_name.py
 # בריפו המקורי - אלה השמות המדויקים והנכונים לרשתות רמי לוי, אושר עד,
 # יוחננוף וכרפור (ששילוב עם יינות ביתן תחת שם אחד בספרייה הזו).
-DEFAULT_CHAINS = ["RAMI_LEVY", "OSHER_AD", "YOHANANOF", "YAYNO_BITAN_AND_CARREFOUR", "HAZI_HINAM"]
+DEFAULT_CHAINS = ["RAMI_LEVY", "OSHER_AD", "YOHANANOF", "YAYNO_BITAN_AND_CARREFOUR", "HAZI_HINAM", "SHUFERSAL"]
 
 
 def get_supabase():
