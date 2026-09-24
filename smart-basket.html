@@ -1035,7 +1035,7 @@ const p = provider.product(id);
 if (!p) return false;
 const toks = norm(it.name).split(' ').filter(Boolean);
 const pWords = norm(p.name || '').split(' ');
-return toks.length > 0 && toks.every(t => pWords.some(w => w === t || w.startsWith(t)));
+return toks.length > 0 && toks.every(t => pWords.includes(t));
 }
 async function startMatching() {
   if (!S.loc) { toast('קודם בוחרים מיקום'); go('location'); return; }
