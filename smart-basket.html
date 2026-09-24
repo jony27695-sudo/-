@@ -1044,7 +1044,8 @@ async function startMatching() {
     if (it.skip) continue;
     if (it.productId) continue;
     const remembered = S.memory[memKey(it)];
-    if (remembered) { it.productId = remembered; continue; }
+    if (remembered && await rememberedStillValid(it, remembered)) { it.productId = remembered; continue; }
+if (remembered) delete S.memory[memKey(it)];
     queue.push(it.id);
   }
   persist();
