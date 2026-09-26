@@ -329,6 +329,28 @@ def update_branches_geo(sb, store_rows):
     chains_by_code = {}
     updated = 0
     geocoded = 0
+    skipped_geo = 0
+
+    existing_geo = set()
+    try:
+        page_size = 1000
+        offset = 0
+        while True:
+            resp = (
+                sb.table("branches")
+                .select("chain_id,external_code")
+                .not_.is_("location", "null")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            rows = resp.data or []
+            for r in rows:
+                existing_geo.add((r["chain_id"], str(r["external_code"])))
+            if len(rows) < page_size:
+                break
+            offset += page_size
+    except Exception as e:
+        log.warning("לא ניתן היה לשלוף סניפים עם מיקום קיים, ימשיך בלי דילוג: %s", e)
 
     for row in store_rows:
         chain_code = pick(row, "chainid")
@@ -368,7 +390,9 @@ def update_branches_geo(sb, store_rows):
         if city:
             payload["city"] = city
 
-        if address or city:
+        if (chain_id, str(store_code)) in existing_geo:
+            skipped_geo += 1
+        elif address or city:
             geo = geocode(address, city)
             if geo:
                 lat, lng = geo
@@ -378,7 +402,12 @@ def update_branches_geo(sb, store_rows):
         sb.table("branches").upsert(payload, on_conflict="chain_id,external_code").execute()
         updated += 1
 
-    log.info("עודכנו %d סניפים עם כתובת, מתוכם %d עם מיקום גיאוגרפי מדויק", updated, geocoded)
+    log.info(
+        "עודכנו %d סניפים עם כתובת; %d קיבלו מיקום גיאוגרפי חדש, %d כבר היו מגואוקדים ודולגו",
+        updated,
+        geocoded,
+        skipped_geo,
+    )
 
 
 def _execute_with_retry(query, attempts=5, base_delay=1.5):
